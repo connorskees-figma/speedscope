@@ -141,6 +141,9 @@ async function _importProfileGroup(dataSource: ProfileDataSource): Promise<Profi
     } else if (parsed['systemHost'] && parsed['systemHost']['name'] == 'Firefox') {
       console.log('Importing as Firefox profile')
       return toGroup(importFromFirefox(parsed))
+    } else if (parsed['meta'] && parsed['meta']['product'] === 'Firefox') {
+      console.log('Importing as new Firefox profile')
+      return toGroup(importFromFirefox(parsed))
     } else if (isChromeTimeline(parsed)) {
       console.log('Importing as Chrome Timeline')
       return importFromChromeTimeline(parsed, fileName)

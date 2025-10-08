@@ -150,40 +150,78 @@ export interface FirefoxProfile {
   version: number
 }
 
-export function importFromFirefox(firefoxProfile: FirefoxProfile): Profile {
-  const cpuProfile = firefoxProfile.profile
+export function importFromFirefox(firefoxProfile: any): Profile {
+  const cpuProfile = firefoxProfile
 
   const thread =
     cpuProfile.threads.length === 1
       ? cpuProfile.threads[0]
-      : cpuProfile.threads.filter(t => t.name === 'GeckoMain')[0]
+      : // : cpuProfile.threads.find(t => t.tid === 16525513)
+        cpuProfile.threads.find(
+          t => t.name === 'GeckoMain' && t.processName === 'Isolated Web Content',
+        )
+
+  console.log({thread, samples: thread.samples})
 
   const frameKeyToFrameInfo = new Map<string, FrameInfo>()
 
-  function extractStack(sample: Sample): FrameInfo[] {
-    let stackFrameId: number | null = sample[0]
+  function extractStack(stackFrameId: number | null): FrameInfo[] {
+    // let stackFrameId: number | null = sample[0]
     const ret: number[] = []
 
     while (stackFrameId != null) {
-      const nextStackFrame: [number | null, number] = thread.stackTable.data[stackFrameId]
-      const [nextStackId, frameId] = nextStackFrame
+      const nextStackId = thread.stackTable.prefix[stackFrameId]
+      const frameId = thread.stackTable.frame[stackFrameId]
+      // const nextStackFrame: [number | null, number] = thread.stackTable.data[stackFrameId]
+      // const [nextStackId, frameId] = nextStackFrame
       ret.push(frameId)
       stackFrameId = nextStackId
     }
     ret.reverse()
+    // if (ret[0] !== 0) {
+    //   console.log({root: ret[0]})
+    // }
     return ret
-      .map(f => {
-        const frameData = thread.frameTable.data[f]
-        const location = thread.stringTable[frameData[0]]
+      .map(frameId => {
+        // const name = thread.funcTable.name[thread.frameTable.func[f]]
+        // const frameData = thread.frameTable.nativeSymbol[f]
 
-        const match = /(.*)\s+\((.*?)(?::(\d+))?(?::(\d+))?\)$/.exec(location)
+        const funcIdx = thread.frameTable.func[frameId]
 
-        if (!match) return null
+        const name = firefoxProfile.shared.stringArray[thread.funcTable.name[funcIdx]]
+
+        const file = firefoxProfile.shared.stringArray[thread.funcTable.fileName[funcIdx]]
+
+        const line = thread.funcTable.lineNumber[funcIdx]
+        const col = thread.funcTable.columnNumber[funcIdx]
+
+        const relevantForJS = thread.funcTable.relevantForJS[funcIdx]
+
+        const match = ['', name, file, line, col]
+
+        if (name.startsWith('0x') && !file) {
+          return null
+        }
+
+        const location = match.toString()
+
+        if (!relevantForJS) {
+          // return null
+        }
+
+        // ANYTHING (ANYTHING:999)
+
+        // const match = /(.*)\s+\((.*?)(?::(\d+))?(?::(\d+))?\)$/.exec(location)
+
+        // console.log({location})
+
+        // if (!match) return null
 
         if (
-          match[2].startsWith('resource:') ||
-          match[2] === 'self-hosted' ||
-          match[2].startsWith('self-hosted:')
+          match[2] &&
+          (match[2].startsWith('resource:') ||
+            match[2] === 'self-hosted' ||
+            match[2].startsWith('self-hosted:'))
         ) {
           // Ignore Firefox-internals stuff
           return null
@@ -203,12 +241,41 @@ export function importFromFirefox(firefoxProfile: FirefoxProfile): Profile {
       .filter(f => f != null) as FrameInfo[]
   }
 
-  const profile = new CallTreeProfileBuilder(firefoxProfile.duration)
+  const startTime = firefoxProfile.meta.profilingStartTime
+
+  const profile = new CallTreeProfileBuilder(
+    firefoxProfile.meta.profilingEndTime - firefoxProfile.meta.profilingStartTime,
+  )
 
   let prevStack: FrameInfo[] = []
-  for (let sample of thread.samples.data) {
-    const stack = extractStack(sample)
-    const value = sample[1]
+
+  let time = thread.samples.time
+
+  if (!time && thread.samples.timeDeltas) {
+    time = []
+    let t = 0
+
+    for (const delta of thread.samples.timeDeltas) {
+      t += delta
+      time.push(t)
+    }
+  }
+
+  thread.samples.time = time
+
+  console.log({
+    time: thread.samples.time.length,
+    stack: thread.samples.stack.length,
+    eventDelay: thread.samples.eventDelay.length,
+  })
+  for (let idx = 0; idx < thread.samples.time.length; idx += 1) {
+    const stackFrameId = thread.samples.stack[idx]
+    const stack = extractStack(stackFrameId)
+    // if (stack.length > 0) {
+    // console.log({stack})
+    // }
+    const value = thread.samples.time[idx] - startTime
+    // sample[1]
 
     // Find lowest common ancestor of the current stack and the previous one
     let lcaIndex = -1
@@ -230,6 +297,13 @@ export function importFromFirefox(firefoxProfile: FirefoxProfile): Profile {
     }
 
     prevStack = stack
+  }
+
+  for (let i = prevStack.length - 1; i >= 0; i--) {
+    profile.leaveFrame(
+      prevStack[i],
+      firefoxProfile.meta.profilingEndTime - firefoxProfile.meta.profilingStartTime,
+    )
   }
 
   profile.setValueFormatter(new TimeFormatter('milliseconds'))
